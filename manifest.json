@@ -1,0 +1,14 @@
+{
+  "name": "GUSERA LTD — XAU/USD Confluence Analysis",
+  "short_name": "GUSERA",
+  "description": "Smart Money Confluence Analysis for XAU/USD — SMC + Fibonacci + EMA200",
+  "start_url": "/index.html",
+  "display": "standalone",
+  "background_color": "#050709",
+  "theme_color": "#050709",
+  "orientation": "portrait",
+  "icons": [
+    { "src": "apple-icon.png", "sizes": "180x180", "type": "image/png" },
+    { "src": "logo.png", "sizes": "512x512", "type": "image/png", "purpose": "any maskable" }
+  ]
+}
