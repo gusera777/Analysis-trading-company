@@ -211,6 +211,89 @@ document.getElementById('swingStatus').className = 'swing-status';
 document.getElementById('swingStatus').textContent = 'Powered by Zep Sabbath';
 document.getElementById('autoBtn').disabled = false;
 lastEMA200 = null;
+updateAnalyzeButtonState();
+}
+
+// ============================================================
+// validity.js — Gatekeeper: hanya loloskan 1 signal yang BENAR-BENAR valid
+// Syarat wajib (semua harus terpenuhi):
+//  1) Swing High/Low sudah terisi & valid (hi > lo)
+//  2) Trend jelas (up/down) — bukan ranging / belum terdeteksi
+//  3) H1 candle sudah di-fetch & SMC displacement CONFIRMED
+//  4) EMA200 selaras dengan arah trend (tidak mismatch)
+// Jika salah satu gagal → tombol Analisis dikunci (disabled).
+// ============================================================
+
+function computeSignalValidity(){
+const hiEl = document.getElementById('hi');
+const loEl = document.getElementById('lo');
+const trEl = document.getElementById('trend');
+
+if(!hiEl || !loEl || !trEl){
+return { valid: false, reason: 'Form belum siap.' };
+}
+
+const hi = parseFloat(hiEl.value);
+const lo = parseFloat(loEl.value);
+const tr = trEl.value;
+
+if(isNaN(hi) || isNaN(lo) || hi <= lo){
+return { valid: false, reason: 'Swing High/Low belum valid. Tap "Generate Data".' };
+}
+if(tr !== 'up' && tr !== 'down'){
+return { valid: false, reason: 'Trend belum jelas / market sedang ranging.' };
+}
+if(!lastH1Candles){
+return { valid: false, reason: 'H1 candle data belum di-fetch. Tap "Generate Data".' };
+}
+
+const confirmation = getCandleConfirmation(lastH1Candles, tr);
+if(!confirmation.confirmed){
+return { valid: false, reason: confirmation.reason || 'SMC displacement belum terkonfirmasi.' };
+}
+
+const emaOk = !!lastEMA200 && ((tr === 'up' && lastEMA200.aboveEma) || (tr === 'down' && !lastEMA200.aboveEma));
+if(!emaOk){
+return { valid: false, reason: 'EMA200 tidak selaras dengan trend (mismatch).' };
+}
+
+return { valid: true, reason: '', confirmation, emaOk };
+}
+
+// Cari tombol Analisis tanpa bergantung pada id tertentu di HTML,
+// supaya tetap jalan walau id tombolnya bukan "analyzeBtn"/"calcBtn".
+function findAnalyzeButton(){
+return document.getElementById('analyzeBtn')
+|| document.getElementById('calcBtn')
+|| document.getElementById('runBtn')
+|| document.querySelector('[onclick*="calc("]')
+|| document.querySelector('[data-action="calc"]');
+}
+
+function updateAnalyzeButtonState(){
+const btn = findAnalyzeButton();
+const note = document.getElementById('gateNote');
+const { valid, reason } = computeSignalValidity();
+
+if(btn){
+btn.disabled = !valid;
+btn.title = valid ? 'Run Analysis' : ('Signal belum valid: ' + reason);
+}
+if(note){
+note.textContent = valid ? '' : `🔒 ${reason}`;
+note.classList.toggle('blocked', !valid);
+}
+}
+
+// Pantau perubahan input manual (hi/lo/trend/spr/stophunt/rrTarget/modal/risk)
+// supaya status tombol selalu up-to-date.
+function attachValidityListeners(){
+['hi','lo','trend','spr','stophunt','rrTarget','modal','risk'].forEach(id => {
+const el = document.getElementById(id);
+if(!el) return;
+el.addEventListener('input', updateAnalyzeButtonState);
+el.addEventListener('change', updateAnalyzeButtonState);
+});
 }
 
 // ── Dropdown Market Watch ──
@@ -301,6 +384,7 @@ status.textContent = '❌ ' + err.message;
 } finally {
 btn.disabled = false;
 btn.innerHTML = origHTML;
+updateAnalyzeButtonState();
 }
 }
 
@@ -387,14 +471,18 @@ return;
 
 // ── EMA 200 filter: validasi trend selaras EMA ──
 const emaOk = lastEMA200 && ((tr === 'up' && lastEMA200.aboveEma) || (tr === 'down' && !lastEMA200.aboveEma));
-const emaWarning = lastEMA200 && !emaOk;
 const emaLabel = lastEMA200 ? (lastEMA200.period < 200 ? `EMA ${lastEMA200.period}` : 'EMA 200') : 'EMA 200';
 const emaValue = lastEMA200 ? lastEMA200.ema.toFixed(2) : 'N/A';
-const emaStatus = lastEMA200
-? (emaOk
-? `✅ Price ${lastEMA200.aboveEma ? 'above' : 'below'} ${emaLabel} (${emaValue}) — Trend confirmed`
-: `⚠️ Price ${lastEMA200.aboveEma ? 'above' : 'below'} ${emaLabel} (${emaValue}) — Trend vs EMA mismatch, trade with caution`)
-: `⚠️ ${emaLabel} not available (run Generate Data first)`;
+
+// Signal HANYA dianggap benar-benar valid jika EMA200 juga selaras dengan trend.
+// Mismatch = signal ditolak sepenuhnya, bukan sekadar warning.
+if(!emaOk){
+out.innerHTML = `🚫 Signal Not Valid<br><br><span style="color:#8B92A0;font-size:13px">${lastEMA200 ? `Price is ${lastEMA200.aboveEma ? 'above' : 'below'} ${emaLabel} (${emaValue}), which contradicts the detected ${tr === 'up' ? 'uptrend' : 'downtrend'}.` : `${emaLabel} not available — run Generate Data first.`} Wait for EMA and trend to align before entering.</span>`;
+updateAnalyzeButtonState();
+return;
+}
+
+const emaStatus = `✅ Price ${lastEMA200.aboveEma ? 'above' : 'below'} ${emaLabel} (${emaValue}) — Trend confirmed`;
 const probabilityTag = confirmation.highProbability
 ? '🔥 Strong Displacement (High Probability)'
 : '✅ Displacement Confirmed';
@@ -490,6 +578,163 @@ out.innerHTML =
 <hr>
 <b style="color:gold">📍 Zone Entry</b>
 <div style="margin-top:10px">${zones.map((z, i) => zoneCard(z, i, dec, rr1, rr2, rr3)).join('')}</div>`;
+
+// ── Simpan ke History (hanya signal yang benar-benar valid sampai di titik ini) ──
+addHistoryEntry({
+time: fmtTime(Date.now()),
+instrument: cfg.label,
+trend: tr,
+highProbability: confirmation.highProbability,
+bodyPercent: confirmation.bodyPercent,
+emaOk: true,
+html: out.innerHTML,
+text: lastText,
+});
+
+updateAnalyzeButtonState();
+}
+
+// ============================================================
+// history.js — History Analisis (localStorage, persist antar sesi)
+// Menyimpan setiap signal yang BENAR-BENAR valid (lolos semua gate:
+// swing valid, trend jelas, SMC confirmed, EMA200 selaras).
+// ============================================================
+
+const HISTORY_KEY = 'xauusd_analysis_history';
+const HISTORY_MAX = 25;
+
+function loadHistory(){
+try{
+const raw = localStorage.getItem(HISTORY_KEY);
+return raw ? JSON.parse(raw) : [];
+} catch(e){
+return [];
+}
+}
+
+function saveHistoryList(list){
+try{ localStorage.setItem(HISTORY_KEY, JSON.stringify(list)); }
+catch(e){ /* storage unavailable, ignore silently */ }
+}
+
+function addHistoryEntry(entry){
+const list = loadHistory();
+list.unshift(entry); // terbaru di atas
+if(list.length > HISTORY_MAX) list.length = HISTORY_MAX;
+saveHistoryList(list);
+renderHistory();
+}
+
+function clearHistory(){
+if(!loadHistory().length){
+showToast('History is already empty');
+return;
+}
+saveHistoryList([]);
+renderHistory();
+showToast('History cleared');
+}
+
+function viewHistoryEntry(idx){
+const list = loadHistory();
+const h = list[idx];
+if(!h) return;
+document.getElementById('out').innerHTML = h.html;
+lastText = h.text;
+showToast('Loaded from history — ' + h.time);
+}
+
+function renderHistory(){
+const listEl = document.getElementById('historyList');
+const countEl = document.getElementById('historyCount');
+if(!listEl) return;
+const list = loadHistory();
+
+if(countEl) countEl.textContent = String(list.length);
+
+if(!list.length){
+listEl.innerHTML = '<div class="history-empty">Belum ada history.<br>Signal valid akan otomatis tersimpan di sini.</div>';
+return;
+}
+
+listEl.innerHTML = list.map((h, i) => `
+<div class="history-item" data-idx="${i}">
+<div class="history-item-main">
+<div class="history-item-title">
+<span class="${h.trend === 'up' ? 'dir-up' : 'dir-down'}">${h.trend === 'up' ? '📈 Uptrend' : '📉 Downtrend'}</span>
+<span>${h.instrument || ''}</span>
+</div>
+<div class="history-item-meta">
+<span>${h.time}</span>
+<span class="history-badge ${h.highProbability ? 'strong' : 'valid'}">${h.highProbability ? '🔥 Strong' : '✅ Valid'} ${Math.round((h.bodyPercent || 0) * 100)}%</span>
+<span>EMA ✅</span>
+</div>
+</div>
+<button type="button" class="history-item-view" data-idx="${i}">View</button>
+</div>
+`).join('');
+
+listEl.querySelectorAll('.history-item').forEach(row => {
+row.addEventListener('click', () => viewHistoryEntry(parseInt(row.getAttribute('data-idx'), 10)));
+});
+listEl.querySelectorAll('.history-item-view').forEach(btn => {
+btn.addEventListener('click', (e) => {
+e.stopPropagation();
+viewHistoryEntry(parseInt(btn.getAttribute('data-idx'), 10));
+});
+});
+}
+
+// ── Download History (.txt — human-readable export) ──
+
+function downloadHistory(){
+const list = loadHistory();
+if(!list.length){
+showToast('No history to download');
+return;
+}
+
+const stampReadable = new Date().toLocaleString('en-US', { day:'2-digit', month:'short', year:'numeric', hour:'2-digit', minute:'2-digit' });
+const header =
+`TRADER CERDAS INDONESIA — Analysis History Export
+Generated : ${stampReadable}
+Records   : ${list.length}
+${'='.repeat(64)}
+
+`;
+
+const body = list.map((h, i) => {
+const idxLabel = `#${list.length - i}`;
+const trendLabel = h.trend === 'up' ? 'UPTREND' : 'DOWNTREND';
+const probLabel = h.highProbability ? 'STRONG' : 'VALID';
+return `${idxLabel}  ${h.time}  |  ${h.instrument || ''}  |  ${trendLabel}  |  ${probLabel} (${Math.round((h.bodyPercent || 0) * 100)}% displacement)
+${'-'.repeat(64)}
+${h.text}
+`;
+}).join(`
+${'='.repeat(64)}
+
+`);
+
+const blob = new Blob([header + body], { type: 'text/plain;charset=utf-8' });
+const url = URL.createObjectURL(blob);
+const stampFile = new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-');
+const a = document.createElement('a');
+a.href = url;
+a.download = `trader-cerdas-history-${stampFile}.txt`;
+document.body.appendChild(a);
+a.click();
+document.body.removeChild(a);
+URL.revokeObjectURL(url);
+showToast('History downloaded');
+}
+
+// Wire tombol Download & Clear pada Card History (elemen statis di HTML).
+function attachHistoryControls(){
+const dlBtn = document.getElementById('downloadHistoryBtn');
+const clBtn = document.getElementById('clearHistoryBtn');
+if(dlBtn) dlBtn.addEventListener('click', downloadHistory);
+if(clBtn) clBtn.addEventListener('click', clearHistory);
 }
 
 // ── Reset ──
@@ -513,6 +758,7 @@ candleConfirmed = false;
 lastH1Candles = null;
 lastEMA200 = null;
 onPairChange();
+updateAnalyzeButtonState();
 }
 
 // ── Copy ──
@@ -555,3 +801,7 @@ setTimeout(() => t.classList.remove('show'), 1800);
 
 // ── Init ──
 onPairChange();
+attachValidityListeners();
+attachHistoryControls();
+renderHistory();
+updateAnalyzeButtonState();
