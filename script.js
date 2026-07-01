@@ -207,8 +207,9 @@ return new Date(t).toLocaleString('en-US', { day:'2-digit', month:'short', hour:
 // ── Pair change ──
 
 function onPairChange(){
-document.getElementById('swingStatus').className = 'swing-status';
-document.getElementById('swingStatus').textContent = 'Powered by Zep Sabbath';
+const status = document.getElementById('swingStatus');
+status.className = 'status-bar idle';
+status.textContent = 'Powered by Zep Sabbath';
 document.getElementById('autoBtn').disabled = false;
 lastEMA200 = null;
 updateAnalyzeButtonState();
@@ -330,8 +331,8 @@ s.id = '_spin_style';
 s.textContent = '@keyframes spin{to{transform:rotate(360deg)}}';
 document.head.appendChild(s);
 }
-status.className = 'swing-status';
-status.textContent = '';
+status.className = 'status-bar simple';
+status.textContent = 'Fetching H1 candle data…';
 candleConfirmed = false;
 lastH1Candles = null;
 
@@ -340,19 +341,17 @@ const candles = await fetchCandlesH1(cfg);
 const { swingHigh, swingLow, trend } = analyzeSwings(candles, SWING_N);
 
 if(!swingHigh || !swingLow){
-status.className = 'swing-status err';
-status.textContent = 'No swing formed yet (not enough H1 data). Try again later.';
+status.className = 'status-bar err simple';
+status.textContent = '⚠️ No swing formed yet (not enough H1 data). Try again later.';
 return;
 }
 
 document.getElementById('hi').value = swingHigh.value;
 document.getElementById('lo').value = swingLow.value;
 
-let trendNote;
-if(trend === 'up'){ setTrendOption('up'); trendNote = ' | Trend: 📈 Up (auto)'; }
-else if(trend === 'down'){ setTrendOption('down'); trendNote = ' | Trend: 📉 Down (auto)'; }
-else if(trend === 'range'){ setTrendOption('range'); trendNote = ' | Trend: ↔️ Ranging — avoid entries, wait for breakout'; }
-else { trendNote = ' | Trend: ⚠️ Not enough pivot data, check manually'; }
+if(trend === 'up') setTrendOption('up');
+else if(trend === 'down') setTrendOption('down');
+else if(trend === 'range') setTrendOption('range');
 
 const confirmation = getCandleConfirmation(candles, trend);
 lastH1Candles = candles;
@@ -360,32 +359,72 @@ candleConfirmed = false; // konfirmasi final dihitung ulang saat Analyze
 
 // ── EMA 200 filter ──
 lastEMA200 = calcEMA200(candles);
-let emaNote = '';
-if(lastEMA200){
-const emaLabel = lastEMA200.period < 200 ? `EMA ${lastEMA200.period}` : 'EMA 200';
-const emaTrend = lastEMA200.aboveEma ? '📈 Above EMA (Bullish)' : '📉 Below EMA (Bearish)';
-const emaMatch = (trend === 'up' && lastEMA200.aboveEma) || (trend === 'down' && !lastEMA200.aboveEma);
-emaNote = ` | ${emaLabel}: ${lastEMA200.ema.toFixed(2)} — ${emaTrend}${emaMatch ? ' ✅' : ' ⚠️ Trend vs EMA mismatch'}`;
-}
 
-let confirmNote = '';
-if(trend === 'up' || trend === 'down'){
-confirmNote = confirmation.confirmed
-? (confirmation.highProbability ? ' | ✅ Displacement: Strong (High Probability)' : ' | ✅ Displacement: Valid')
-: ` | ⏳ No displacement yet (${confirmation.reason})`;
-}
-
-status.className = (trend === 'up' || trend === 'down') && confirmation.confirmed ? 'swing-status ok' : 'swing-status err';
-status.textContent = `✅ H1 High @ ${fmtTime(swingHigh.time)} | Low @ ${fmtTime(swingLow.time)}${trendNote}${confirmNote}${emaNote}`;
+status.className = 'status-bar';
+status.innerHTML = buildSwingResultHTML(swingHigh, swingLow, trend, confirmation, lastEMA200, decimalsFor(cfg.pipSize));
 
 } catch(err){
-status.className = 'swing-status err';
+status.className = 'status-bar err simple';
 status.textContent = '❌ ' + err.message;
 } finally {
 btn.disabled = false;
 btn.innerHTML = origHTML;
 updateAnalyzeButtonState();
 }
+}
+
+// ── Bangun tampilan hasil swing/trend/EMA/confirmation dalam bentuk baris + badge ──
+// (menggantikan teks satu baris panjang yang dipisah "|" — lebih enak dibaca).
+function badgeHTML(text, tone){
+return `<span class="result-badge tone-${tone}">${text}</span>`;
+}
+
+function buildSwingResultHTML(swingHigh, swingLow, trend, confirmation, ema, dec){
+const badges = [];
+
+// ── Trend badge ──
+if(trend === 'up') badges.push(badgeHTML('📈 Uptrend (auto)', 'up'));
+else if(trend === 'down') badges.push(badgeHTML('📉 Downtrend (auto)', 'down'));
+else if(trend === 'range') badges.push(badgeHTML('↔️ Ranging — wait for breakout', 'info'));
+else badges.push(badgeHTML('⚠️ Not enough pivot data', 'muted'));
+
+// ── EMA badge ──
+if(ema){
+const emaLabel = ema.period < 200 ? `EMA ${ema.period}` : 'EMA 200';
+const emaDir = ema.aboveEma ? 'Above EMA (Bullish)' : 'Below EMA (Bearish)';
+const emaMatch = (trend === 'up' && ema.aboveEma) || (trend === 'down' && !ema.aboveEma);
+const emaTone = (trend === 'up' || trend === 'down') ? (emaMatch ? 'up' : 'warn') : 'muted';
+badges.push(badgeHTML(`${emaLabel} ${ema.ema.toFixed(2)} · ${emaDir}`, emaTone));
+if((trend === 'up' || trend === 'down') && !emaMatch){
+badges.push(badgeHTML('⚠️ Trend vs EMA mismatch', 'warn'));
+}
+}
+
+// ── Displacement confirmation badge ──
+if(trend === 'up' || trend === 'down'){
+if(confirmation.confirmed){
+badges.push(badgeHTML(
+confirmation.highProbability ? '🔥 Strong Displacement' : '✅ Displacement Valid',
+'up'
+));
+} else {
+badges.push(badgeHTML('⏳ Displacement pending', 'muted'));
+}
+}
+
+return `
+<div class="swing-result-rows">
+<div class="swing-result-row">
+<span class="swing-result-label">Swing High</span>
+<span class="swing-result-value">${swingHigh.value.toFixed(dec)}<span class="swing-result-time">${fmtTime(swingHigh.time)}</span></span>
+</div>
+<div class="swing-result-row">
+<span class="swing-result-label">Swing Low</span>
+<span class="swing-result-value">${swingLow.value.toFixed(dec)}<span class="swing-result-time">${fmtTime(swingLow.time)}</span></span>
+</div>
+</div>
+<div class="swing-result-badges">${badges.join('')}</div>
+`;
 }
 
 // ── Zone Card HTML ──
